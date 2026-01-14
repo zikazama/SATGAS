@@ -1,0 +1,8 @@
+langgraph
+langchain
+langchain-core
+streamlit
+python-dotenv
+openai
+black
+autopep8
