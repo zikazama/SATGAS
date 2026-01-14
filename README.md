@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/satgas-logo.png" alt="SATGAS Logo" width="200"/>
+</p>
+
 # SATGAS
 
 **Scalable Agent-to-agent Task Generation & Automation Service**
