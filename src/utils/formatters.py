@@ -343,8 +343,10 @@ def format_python_file(filepath: Path) -> bool:
                     [black_path, str(filepath), "--quiet"],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=10  # Reduced timeout - formatting should be fast
                 )
+            except subprocess.TimeoutExpired:
+                pass  # Skip if timeout
             except Exception:
                 pass  # Black formatting is optional
 
@@ -371,25 +373,21 @@ def format_js_file(filepath: Path) -> bool:
             filepath.write_text(fixed_content, encoding='utf-8')
 
         # Then try to run prettier for additional formatting
-        npx_path = shutil.which("npx")
+        # Only use direct prettier, NOT npx (npx can hang trying to download)
         prettier_path = shutil.which("prettier")
 
         if prettier_path:
-            cmd = [prettier_path, "--write", str(filepath)]
-        elif npx_path:
-            cmd = [npx_path, "prettier", "--write", str(filepath)]
-        else:
-            return True  # No external formatter, but our indenter ran
-
-        try:
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-        except Exception:
-            pass  # Prettier formatting is optional
+            try:
+                subprocess.run(
+                    [prettier_path, "--write", str(filepath)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10  # Reduced timeout - formatting should be fast
+                )
+            except subprocess.TimeoutExpired:
+                pass  # Skip if timeout
+            except Exception:
+                pass  # Prettier formatting is optional
 
         return True
     except Exception:
@@ -472,7 +470,8 @@ def check_formatters_available() -> dict:
     """
     return {
         "black": shutil.which("black") is not None,
-        "prettier": shutil.which("prettier") is not None or shutil.which("npx") is not None,
+        # Only check direct prettier, NOT npx (npx can hang trying to download)
+        "prettier": shutil.which("prettier") is not None,
         "python_indenter": True,  # Our custom Python indenter is always available
         "js_indenter": True,  # Our custom JS/TS indenter is always available
     }
