@@ -236,9 +236,119 @@ CHECKLIST DOCKERFILE:
 [x] Tambahkan health check
 [x] Gunakan --no-install-recommends untuk apt-get
 
+###############################################################################
+# ATURAN YAML (SANGAT PENTING - YAML BUTUH INDENTASI YANG BENAR):
+###############################################################################
+
+YAML MENGGUNAKAN INDENTASI 2 SPASI UNTUK SETIAP LEVEL!
+Tanpa indentasi yang benar, YAML akan ERROR dan tidak bisa di-parse!
+
+TEMPLATE docker-compose.yml (PERHATIKAN INDENTASI):
+```yaml
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      target: production
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/app
+    depends_on:
+      - db
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  db:
+    image: postgres:alpine
+    environment:
+      - POSTGRES_DB=app
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+volumes:
+  postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
+```
+
+TEMPLATE .github/workflows/ci.yml (PERHATIKAN INDENTASI):
+```yaml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run tests
+        run: pytest backend/
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build Docker images
+        run: docker-compose build
+```
+
+CHECKLIST YAML:
+[x] Setiap level nested HARUS di-indent 2 spasi
+[x] services, volumes, networks di level 0
+[x] Nama service (backend, frontend, db) di level 1 (2 spasi)
+[x] Properties service (build, ports, etc) di level 2 (4 spasi)
+[x] List items dengan '-' di level yang sama dengan parent-nya
+
 {self.get_file_format_instructions()}
 
-Generate setiap file secara lengkap."""
+Generate setiap file secara lengkap dengan INDENTASI YANG BENAR."""
 
     # =========================================================================
     # RESPONSE PROCESSING

@@ -435,6 +435,58 @@ class StreamingFileSaver:
 
         return '\n'.join(fixed_lines)
 
+    def _fix_settings_instantiation(self, content: str) -> str:
+        """Fix Settings() instantiation that's wrongly placed inside Settings class.
+
+        The LLM often generates:
+            class Settings(BaseSettings):
+                DATABASE_URL: str = "..."
+                model_config = SettingsConfigDict(...)
+                settings = Settings()  # WRONG - inside class
+
+        This should be:
+            class Settings(BaseSettings):
+                DATABASE_URL: str = "..."
+                model_config = SettingsConfigDict(...)
+
+            settings = Settings()  # CORRECT - outside class
+        """
+        lines = content.split('\n')
+        fixed_lines = []
+        settings_line = None
+        in_settings_class = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+
+            # Track when we enter Settings class
+            if stripped.startswith('class Settings'):
+                in_settings_class = True
+                fixed_lines.append(line)
+                continue
+
+            # Track when we exit Settings class (new class at column 0)
+            if in_settings_class and stripped.startswith('class ') and not line.startswith(' ') and not line.startswith('\t'):
+                in_settings_class = False
+
+            # Check for settings = Settings() inside the class (indented)
+            if in_settings_class and stripped == 'settings = Settings()' and (line.startswith(' ') or line.startswith('\t')):
+                # Save this line to add at the end, outside the class
+                settings_line = 'settings = Settings()'
+                continue
+
+            fixed_lines.append(line)
+
+        # Add the settings instantiation at the end if we found one inside the class
+        if settings_line:
+            # Ensure there's a blank line before
+            if fixed_lines and fixed_lines[-1].strip():
+                fixed_lines.append('')
+            fixed_lines.append('')
+            fixed_lines.append(settings_line)
+
+        return '\n'.join(fixed_lines)
+
     def _save_file_from_state(self, state: AgentFileState) -> None:
         """Save the current file from agent state to disk."""
         if not state.current_file:
@@ -459,6 +511,10 @@ class StreamingFileSaver:
         # Post-process Pydantic schemas to fix Config indentation
         if filepath.endswith('.py') and 'schemas' in filepath:
             content = self._fix_pydantic_config_indentation(content)
+
+        # Post-process config.py to fix Settings instantiation
+        if filepath.endswith('config.py') or filepath.endswith('settings.py'):
+            content = self._fix_settings_instantiation(content)
 
         target_path.write_text(content, encoding="utf-8")
         self.saved_files.append(filepath)
