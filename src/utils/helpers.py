@@ -80,6 +80,21 @@ def slugify(text: str) -> str:
     return candidate or "project"
 
 
+class AgentFileState:
+    """Per-agent state for parallel execution safety.
+
+    Each agent maintains its own file-building state so parallel agents
+    don't interfere with each other's file content.
+    """
+
+    def __init__(self):
+        self.current_file: str | None = None
+        self.file_content: list[str] = []
+        self.in_code_block: bool = False
+        self.in_raw_mode: bool = False
+        self.pending_file: str | None = None
+
+
 class StreamingFileSaver:
     """Parse streaming output and save files incrementally.
 
@@ -87,6 +102,10 @@ class StreamingFileSaver:
     1. ===FILE: path/to/file.py===
     2. ```language path/to/file.py (markdown code block)
     3. **File: path/to/file.py** or **path/to/file.py**
+
+    For parallel execution, maintains per-agent state to prevent
+    file content from getting mixed up when multiple agents output
+    simultaneously.
     """
 
     # Regex patterns for detecting file paths - supports many tech stacks
@@ -130,32 +149,23 @@ class StreamingFileSaver:
         self.output_dir = output_dir
         self.on_file_saved = on_file_saved
         self.buffer: list[str] = []
-        self.current_file: str | None = None
-        self.file_content: list[str] = []
         self.saved_files: list[str] = []
-        self.in_code_block: bool = False
-        self.in_raw_mode: bool = False  # True when using ===FILE:=== format
-        self.pending_file: str | None = None  # File path waiting for code block
-        self.current_agent: str | None = None  # Track current agent for parallel execution
         self._lock = threading.Lock()  # Thread-safe access for parallel agents
 
-    def set_agent(self, agent_name: str | None) -> None:
-        """Set the current agent. Saves any pending file when agent changes.
+        # Per-agent state for parallel execution
+        # Key: agent_name (or "_default" for no agent specified)
+        self._agent_states: dict[str, AgentFileState] = {}
 
-        This is critical for parallel execution - when a different agent starts
-        outputting, we save any incomplete file from the previous agent to prevent
-        content from getting mixed up.
+    def _get_agent_state(self, agent_name: str | None) -> AgentFileState:
+        """Get or create state for an agent.
+
+        Each agent has its own file-building state to prevent mixing
+        during parallel execution.
         """
-        with self._lock:
-            if agent_name != self.current_agent:
-                # Agent changed - save any pending file to prevent mixing
-                if self.current_file and self.file_content:
-                    self._save_current_file()
-                # Reset state for new agent
-                self.in_raw_mode = False
-                self.in_code_block = False
-                self.pending_file = None
-                self.current_agent = agent_name
+        key = agent_name or "_default"
+        if key not in self._agent_states:
+            self._agent_states[key] = AgentFileState()
+        return self._agent_states[key]
 
     def _extract_filepath(self, line: str) -> str | None:
         """Try to extract a file path from various formats."""
@@ -237,20 +247,12 @@ class StreamingFileSaver:
 
         Args:
             line: The line to process
-            agent_name: Optional agent name. If provided and different from current,
-                        saves any pending file first to prevent mixing.
+            agent_name: Optional agent name. Each agent maintains its own
+                        file-building state for parallel execution safety.
         """
         with self._lock:
-            # Handle agent change for parallel execution safety
-            if agent_name is not None and agent_name != self.current_agent:
-                # Agent changed - save any pending file to prevent mixing
-                if self.current_file and self.file_content:
-                    self._save_current_file()
-                # Reset state for new agent
-                self.in_raw_mode = False
-                self.in_code_block = False
-                self.pending_file = None
-                self.current_agent = agent_name
+            # Get or create state for this agent
+            state = self._get_agent_state(agent_name)
 
             # Strip agent prefix like "[Backend Engineer] "
             cleaned_line = re.sub(r'^\[[^\]]+\]\s*', '', line)
@@ -258,15 +260,15 @@ class StreamingFileSaver:
 
             # Filter out LLM commentary when NOT inside a file block
             # This prevents "I'll create...", "Saya akan..." etc. from polluting output
-            if not self.in_raw_mode and not (self.in_code_block and self.current_file):
+            if not state.in_raw_mode and not (state.in_code_block and state.current_file):
                 if is_llm_commentary(cleaned_line):
                     # Skip this line - it's LLM commentary, not code
                     return
 
             # Check for explicit end marker (===END_FILE===)
-            if self._is_file_end_marker(cleaned_line) and self.current_file:
-                self._save_current_file()
-                self.in_raw_mode = False
+            if self._is_file_end_marker(cleaned_line) and state.current_file:
+                self._save_file_from_state(state)
+                state.in_raw_mode = False
                 return
 
             # Check for ===FILE: marker (explicit file format, no code block needed)
@@ -274,58 +276,58 @@ class StreamingFileSaver:
                 filepath = stripped[len(FILE_START_MARKER):-3].strip()
                 if filepath:
                     # Save previous file if exists
-                    if self.current_file and self.file_content:
-                        self._save_current_file()
-                    self.current_file = filepath
-                    self.file_content = []
-                    self.in_code_block = False
-                    self.in_raw_mode = True  # Using raw ===FILE:=== format
+                    if state.current_file and state.file_content:
+                        self._save_file_from_state(state)
+                    state.current_file = filepath
+                    state.file_content = []
+                    state.in_code_block = False
+                    state.in_raw_mode = True  # Using raw ===FILE:=== format
                 return
 
             # If in raw mode (===FILE:=== format), accumulate everything until ===END_FILE===
-            if self.in_raw_mode and self.current_file:
-                self.file_content.append(cleaned_line)
+            if state.in_raw_mode and state.current_file:
+                state.file_content.append(cleaned_line)
                 return
 
             # Check for code block end (```) while in a code block
-            if self.in_code_block and self._is_code_block_end(cleaned_line):
-                if self.current_file:
-                    self._save_current_file()
-                self.in_code_block = False
+            if state.in_code_block and self._is_code_block_end(cleaned_line):
+                if state.current_file:
+                    self._save_file_from_state(state)
+                state.in_code_block = False
                 return
 
             # Check for code block start (```)
-            if stripped.startswith("```") and not self.in_code_block:
-                self.in_code_block = True
+            if stripped.startswith("```") and not state.in_code_block:
+                state.in_code_block = True
 
                 # Try to extract file path from code block line
                 filepath = self._extract_filepath(cleaned_line)
                 if filepath:
                     # Save previous file if exists
-                    if self.current_file and self.file_content:
-                        self._save_current_file()
-                    self.current_file = filepath
-                    self.file_content = []
-                elif self.pending_file:
+                    if state.current_file and state.file_content:
+                        self._save_file_from_state(state)
+                    state.current_file = filepath
+                    state.file_content = []
+                elif state.pending_file:
                     # Use pending file path
-                    if self.current_file and self.file_content:
-                        self._save_current_file()
-                    self.current_file = self.pending_file
-                    self.file_content = []
-                    self.pending_file = None
+                    if state.current_file and state.file_content:
+                        self._save_file_from_state(state)
+                    state.current_file = state.pending_file
+                    state.file_content = []
+                    state.pending_file = None
                 return
 
             # Try to extract file path from non-code-block line (for markdown formats)
-            if not self.in_code_block and not self.current_file:
+            if not state.in_code_block and not state.current_file:
                 filepath = self._extract_filepath(cleaned_line)
                 if filepath:
                     # Store as pending, will be used when code block starts
-                    self.pending_file = filepath
+                    state.pending_file = filepath
                     return
 
             # Accumulate content if we have a current file in code block mode
-            if self.in_code_block and self.current_file is not None:
-                self.file_content.append(cleaned_line)
+            if state.in_code_block and state.current_file is not None:
+                state.file_content.append(cleaned_line)
             else:
                 # Store non-file content in buffer
                 self.buffer.append(cleaned_line)
@@ -362,20 +364,20 @@ class StreamingFileSaver:
 
         return '\n'.join(filtered_lines)
 
-    def _save_current_file(self) -> None:
-        """Save the current file to disk."""
-        if not self.current_file:
+    def _save_file_from_state(self, state: AgentFileState) -> None:
+        """Save the current file from agent state to disk."""
+        if not state.current_file:
             return
 
         # Clean up the file path
-        filepath = self.current_file.lstrip("/\\")
+        filepath = state.current_file.lstrip("/\\")
         target_path = self.output_dir / filepath
 
         # Create parent directories
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Write content
-        content = "\n".join(self.file_content)
+        content = "\n".join(state.file_content)
         # Remove leading/trailing empty lines but preserve internal structure
         content = content.strip()
 
@@ -390,19 +392,22 @@ class StreamingFileSaver:
         if self.on_file_saved:
             self.on_file_saved(filepath, len(content))
 
-        # Reset
-        self.current_file = None
-        self.file_content = []
+        # Reset state
+        state.current_file = None
+        state.file_content = []
 
     def get_remaining_content(self) -> str:
         """Get any content that wasn't part of a file block."""
         return "\n".join(self.buffer)
 
     def finalize(self) -> None:
-        """Finalize parsing - save any incomplete file."""
+        """Finalize parsing - save any incomplete files from all agents."""
         with self._lock:
-            if self.current_file and self.file_content:
-                self._save_current_file()
-            self.in_raw_mode = False
-            self.in_code_block = False
-            self.current_agent = None
+            # Save incomplete files from all agent states
+            for agent_name, state in self._agent_states.items():
+                if state.current_file and state.file_content:
+                    self._save_file_from_state(state)
+                state.in_raw_mode = False
+                state.in_code_block = False
+            # Clear all agent states
+            self._agent_states.clear()
