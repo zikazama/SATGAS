@@ -734,6 +734,7 @@ def fix_github_actions_yaml(content: str) -> str:
     in_job = False
     in_services = False
     in_service = False
+    in_service_env = False  # Inside env: block within a service
     in_steps = False
     in_step_item = False
     in_with = False
@@ -839,8 +840,23 @@ def fix_github_actions_yaml(content: str) -> str:
                     if stripped.endswith(':') and stripped.count(':') == 1 and key not in service_keys:
                         result.append('      ' + stripped)  # 6 spaces - service name
                         in_service = True
+                        in_service_env = False
                         continue
                     if in_service:
+                        # Check if this is env: block
+                        if stripped == 'env:':
+                            result.append('        env:')  # 8 spaces
+                            in_service_env = True
+                            continue
+                        # Content inside env: block (env vars like POSTGRES_PASSWORD: value)
+                        if in_service_env:
+                            if key in service_keys and key != 'env':
+                                # New service key, exit env block
+                                in_service_env = False
+                                result.append('        ' + stripped)  # 8 spaces
+                            else:
+                                result.append('          ' + stripped)  # 10 spaces (env var)
+                            continue
                         # Service config (image:, ports:, etc.)
                         if key in service_keys:
                             result.append('        ' + stripped)  # 8 spaces
