@@ -320,6 +320,109 @@ def fix_js_indentation(content: str, indent_size: int = 2) -> str:
     return '\n'.join(result)
 
 
+def fix_pydantic_config(content: str) -> str:
+    """Fix Pydantic Config class that's wrongly placed outside Response class.
+
+    The LLM and indentation fixer often produce:
+        class UserResponse(BaseModel):
+            id: int
+
+        class Config:  # WRONG - outside class
+            from_attributes = True
+
+    This should be:
+        class UserResponse(BaseModel):
+            id: int
+
+            class Config:  # CORRECT - inside class
+                from_attributes = True
+    """
+    lines = content.split('\n')
+    fixed_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Check if this is a standalone "class Config:" at column 0
+        if stripped.startswith('class Config:') and not line.startswith(' ') and not line.startswith('\t'):
+            # Look back to find the Response class this should belong to
+            for j in range(len(fixed_lines) - 1, -1, -1):
+                prev_line = fixed_lines[j].strip()
+                if prev_line.startswith('class ') and 'Response' in prev_line:
+                    # Found a Response class - indent this Config and its body
+                    if fixed_lines and fixed_lines[-1].strip():
+                        fixed_lines.append('')
+                    fixed_lines.append('    class Config:')
+
+                    # Indent all following lines that are part of Config
+                    i += 1
+                    while i < len(lines):
+                        next_line = lines[i]
+                        next_stripped = next_line.strip()
+
+                        # Stop if we hit another class definition
+                        if next_stripped.startswith('class ') and not next_stripped.startswith('class Config'):
+                            i -= 1
+                            break
+
+                        # Stop if we hit a non-indented non-empty line (not part of Config)
+                        if next_stripped and not next_line.startswith(' ') and not next_line.startswith('\t'):
+                            if not next_stripped.startswith('from_attributes') and not next_stripped.startswith('orm_mode'):
+                                i -= 1
+                                break
+
+                        # Indent the content
+                        if next_stripped:
+                            fixed_lines.append('        ' + next_stripped)
+                        else:
+                            fixed_lines.append('')
+                        i += 1
+                    break
+            else:
+                # No Response class found, keep as is
+                fixed_lines.append(line)
+        else:
+            fixed_lines.append(line)
+        i += 1
+
+    return '\n'.join(fixed_lines)
+
+
+def fix_settings_instantiation(content: str) -> str:
+    """Fix Settings() instantiation that's wrongly placed inside Settings class."""
+    lines = content.split('\n')
+    fixed_lines = []
+    settings_line = None
+    in_settings_class = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith('class Settings'):
+            in_settings_class = True
+            fixed_lines.append(line)
+            continue
+
+        if in_settings_class and stripped.startswith('class ') and not line.startswith(' ') and not line.startswith('\t'):
+            in_settings_class = False
+
+        if in_settings_class and stripped == 'settings = Settings()' and (line.startswith(' ') or line.startswith('\t')):
+            settings_line = 'settings = Settings()'
+            continue
+
+        fixed_lines.append(line)
+
+    if settings_line:
+        if fixed_lines and fixed_lines[-1].strip():
+            fixed_lines.append('')
+        fixed_lines.append('')
+        fixed_lines.append(settings_line)
+
+    return '\n'.join(fixed_lines)
+
+
 def format_python_file(filepath: Path) -> bool:
     """Format a Python file - first fix indentation, then run black.
 
@@ -331,6 +434,13 @@ def format_python_file(filepath: Path) -> bool:
 
         # First, fix indentation
         fixed_content = fix_python_indentation(content)
+
+        # Apply Pydantic/Settings fixes for schema and config files
+        filepath_str = str(filepath).lower()
+        if 'schema' in filepath_str:
+            fixed_content = fix_pydantic_config(fixed_content)
+        if 'config' in filepath_str or 'settings' in filepath_str:
+            fixed_content = fix_settings_instantiation(fixed_content)
 
         # Write back the fixed content
         filepath.write_text(fixed_content, encoding='utf-8')
