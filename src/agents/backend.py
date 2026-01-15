@@ -101,7 +101,36 @@ FITUR WAJIB:
 - Database integration sesuai tech_stack
 
 ###############################################################################
-# CHECKLIST WAJIB UNTUK PYTHON/FASTAPI (PASTIKAN SEMUA TERPENUHI):
+# ATURAN KRITIS PYDANTIC SCHEMA - BACA BAIK-BAIK!
+###############################################################################
+
+KESALAHAN FATAL YANG SERING TERJADI:
+`class Config` ditulis DI LUAR class Response. Ini SALAH dan akan ERROR!
+
+CONTOH SALAH (JANGAN LAKUKAN INI):
+```python
+class UserResponse(UserBase):
+    id: int
+    created_at: datetime
+
+class Config:                    # SALAH! Config di luar class!
+    from_attributes = True
+```
+
+CONTOH BENAR (LAKUKAN INI):
+```python
+class UserResponse(UserBase):
+    id: int
+    created_at: datetime
+
+    class Config:                # BENAR! Config di dalam class dengan indentasi!
+        from_attributes = True
+```
+
+PERHATIKAN: `class Config` HARUS di-INDENT 4 spasi (sejajar dengan field `id`, `created_at`)
+
+###############################################################################
+# CHECKLIST WAJIB UNTUK PYTHON/FASTAPI:
 ###############################################################################
 
 [x] SQLALCHEMY MODELS:
@@ -109,14 +138,10 @@ FITUR WAJIB:
     - Setiap model HARUS punya __tablename__
     - Setiap relationship HARUS punya back_populates
 
-[x] PYDANTIC SCHEMAS:
-    - `class Config` HARUS di DALAM class Response, bukan di luar
-    - Gunakan `from_attributes = True` untuk ORM mode
-    - Contoh BENAR:
-      class UserResponse(BaseModel):
-          id: int
-          class Config:
-              from_attributes = True
+[x] PYDANTIC SCHEMAS (SANGAT PENTING):
+    - SETIAP class Response HARUS punya `class Config` DI DALAM-nya
+    - `class Config` HARUS di-indent (sejajar dengan field)
+    - Gunakan `from_attributes = True`
 
 [x] SETTINGS/CONFIG:
     - Gunakan pydantic-settings v2 dengan model_config
@@ -129,13 +154,11 @@ FITUR WAJIB:
 [x] AUTH ENDPOINTS:
     - Import UserCreate/UserResponse dari schemas.user, BUKAN dari schemas.auth
     - Try-except block HARUS punya indentasi yang benar
-    - Semua kode di dalam try HARUS di-indent 4 spasi
 
 [x] IMPORT STATEMENTS:
     - Pastikan SEMUA yang digunakan sudah di-import
     - relationship dari sqlalchemy.orm
     - func dari sqlalchemy.sql
-    - Semua schema dari module yang benar
 
 ###############################################################################
 
