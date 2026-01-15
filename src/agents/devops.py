@@ -120,6 +120,122 @@ REQUIREMENTS:
 - docker-compose dengan environment variables
 - CI pipeline: lint, test, build
 
+###############################################################################
+# ATURAN DOCKERFILE (SANGAT PENTING):
+###############################################################################
+
+SEMUA KOMENTAR DI DOCKERFILE HARUS DIAWALI DENGAN '#':
+
+SALAH (tidak akan ter-highlight sebagai komentar):
+```dockerfile
+FROM python:3.11-slim
+Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+Expose port
+EXPOSE 8000
+```
+
+BENAR (komentar akan ter-highlight dengan benar):
+```dockerfile
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Expose port
+EXPOSE 8000
+```
+
+TEMPLATE DOCKERFILE PYTHON/FASTAPI:
+```dockerfile
+FROM python:3.11-slim AS base
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \\
+    PYTHONUNBUFFERED=1 \\
+    PYTHONPATH=/app
+
+# Create non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    gcc \\
+    curl \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \\
+    pip install --no-cache-dir -r requirements.txt
+
+# Production stage
+FROM base AS production
+
+# Copy application code
+COPY . .
+
+# Change ownership to non-root user
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \\
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+TEMPLATE DOCKERFILE NODE.JS:
+```dockerfile
+FROM node:20-alpine AS base
+
+# Set working directory
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Production stage
+FROM base AS production
+
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \\
+    adduser -S nextjs -u 1001
+
+# Switch to non-root user
+USER nextjs
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \\
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
+# Run the application
+CMD ["node", "dist/index.js"]
+```
+
+CHECKLIST DOCKERFILE:
+[x] Setiap komentar HARUS diawali dengan '# ' (hash + spasi)
+[x] Gunakan multi-stage build untuk production
+[x] Jalankan sebagai non-root user
+[x] Tambahkan health check
+[x] Gunakan --no-install-recommends untuk apt-get
+
 {self.get_file_format_instructions()}
 
 Generate setiap file secara lengkap."""

@@ -100,9 +100,49 @@ FITUR WAJIB:
 - Error handling yang konsisten
 - Database integration sesuai tech_stack
 
+###############################################################################
+# CHECKLIST WAJIB UNTUK PYTHON/FASTAPI (PASTIKAN SEMUA TERPENUHI):
+###############################################################################
+
+[x] SQLALCHEMY MODELS:
+    - WAJIB import `from sqlalchemy.orm import relationship` jika model punya relationship
+    - Setiap model HARUS punya __tablename__
+    - Setiap relationship HARUS punya back_populates
+
+[x] PYDANTIC SCHEMAS:
+    - `class Config` HARUS di DALAM class Response, bukan di luar
+    - Gunakan `from_attributes = True` untuk ORM mode
+    - Contoh BENAR:
+      class UserResponse(BaseModel):
+          id: int
+          class Config:
+              from_attributes = True
+
+[x] SETTINGS/CONFIG:
+    - Gunakan pydantic-settings v2 dengan model_config
+    - Berikan default value untuk development
+    - Contoh BENAR:
+      class Settings(BaseSettings):
+          DATABASE_URL: str = "postgresql://..."
+          model_config = SettingsConfigDict(env_file=".env")
+
+[x] AUTH ENDPOINTS:
+    - Import UserCreate/UserResponse dari schemas.user, BUKAN dari schemas.auth
+    - Try-except block HARUS punya indentasi yang benar
+    - Semua kode di dalam try HARUS di-indent 4 spasi
+
+[x] IMPORT STATEMENTS:
+    - Pastikan SEMUA yang digunakan sudah di-import
+    - relationship dari sqlalchemy.orm
+    - func dari sqlalchemy.sql
+    - Semua schema dari module yang benar
+
+###############################################################################
+
 {self.get_file_format_instructions()}
 
-Generate setiap file secara lengkap dan siap dijalankan."""
+Generate setiap file secara lengkap dan siap dijalankan.
+SEBELUM SELESAI: Periksa kembali semua checklist di atas!"""
 
     # =========================================================================
     # RESPONSE PROCESSING
