@@ -423,6 +423,535 @@ def fix_settings_instantiation(content: str) -> str:
     return '\n'.join(fixed_lines)
 
 
+def fix_yaml_indentation(content: str) -> str:
+    """Fix missing indentation in YAML files (docker-compose.yml, ci.yml).
+
+    YAML uses 2-space indentation where each nested level adds 2 spaces.
+    This function reconstructs proper indentation based on YAML structure.
+    """
+    lines = content.split('\n')
+    result = []
+    indent_stack = [0]  # Stack of indent levels
+
+    # Top-level keys that should have 0 indent
+    top_level_keys = {
+        'version', 'services', 'volumes', 'networks', 'name', 'on', 'jobs',
+        'env', 'defaults', 'permissions', 'concurrency'
+    }
+
+    # Keys that indicate a new nested block (their children need more indent)
+    block_keys = {
+        'services', 'volumes', 'networks', 'on', 'jobs', 'steps', 'env',
+        'build', 'environment', 'ports', 'depends_on', 'with', 'strategy',
+        'matrix', 'container', 'options', 'outputs', 'inputs', 'secrets'
+    }
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip empty lines
+        if not stripped:
+            result.append('')
+            i += 1
+            continue
+
+        # Skip comments but preserve them at current indent
+        if stripped.startswith('#'):
+            current_indent = indent_stack[-1] if indent_stack else 0
+            result.append('  ' * current_indent + stripped)
+            i += 1
+            continue
+
+        # Check if this is a list item (starts with -)
+        is_list_item = stripped.startswith('-')
+
+        # Extract the key if this is a key: value line
+        key = None
+        if ':' in stripped and not is_list_item:
+            key = stripped.split(':')[0].strip()
+        elif is_list_item and ':' in stripped:
+            # List item with key like "- name: something"
+            after_dash = stripped[1:].strip()
+            if ':' in after_dash:
+                key = after_dash.split(':')[0].strip()
+
+        # Determine the correct indent level
+        if key and key in top_level_keys:
+            # Top-level keys always at indent 0
+            indent_stack = [0]
+            result.append(stripped)
+        elif is_list_item:
+            # List items: use current indent level
+            current_indent = indent_stack[-1] if indent_stack else 0
+            result.append('  ' * current_indent + stripped)
+
+            # If list item has nested content (like steps), push indent
+            if stripped.endswith(':'):
+                indent_stack.append(current_indent + 2)
+        elif key:
+            # Key: value line
+            current_indent = indent_stack[-1] if indent_stack else 0
+
+            # Check if previous non-empty line was a block key ending with :
+            # If so, this should be nested under it
+            prev_was_block = False
+            for j in range(len(result) - 1, -1, -1):
+                prev_stripped = result[j].strip()
+                if prev_stripped:
+                    if prev_stripped.endswith(':') and not prev_stripped.startswith('-'):
+                        prev_was_block = True
+                    break
+
+            if prev_was_block and current_indent > 0:
+                # Already at correct level from previous block
+                pass
+            elif key in block_keys:
+                # Block keys at current level
+                pass
+
+            result.append('  ' * current_indent + stripped)
+
+            # If this line ends with :, next level needs more indent
+            if stripped.endswith(':'):
+                indent_stack.append(current_indent + 1)
+        else:
+            # Other lines (values, etc.)
+            current_indent = indent_stack[-1] if indent_stack else 0
+            result.append('  ' * current_indent + stripped)
+
+        i += 1
+
+    return '\n'.join(result)
+
+
+def fix_docker_compose_yaml(content: str) -> str:
+    """Fix docker-compose.yml specific indentation.
+
+    Docker-compose structure:
+    version: '3.8'        # 0 indent
+    services:             # 0 indent
+      backend:            # 2 spaces (service name)
+        build:            # 4 spaces (service config)
+          context: ./x    # 6 spaces (build config)
+        ports:            # 4 spaces
+          - "8000:8000"   # 6 spaces (list item)
+    volumes:              # 0 indent
+      data:               # 2 spaces
+    networks:             # 0 indent
+      app-network:        # 2 spaces
+        driver: bridge    # 4 spaces
+    """
+    lines = content.split('\n')
+    result = []
+
+    # Top-level ONLY keys (never appear inside services)
+    top_level_only_keys = {'version', 'services'}
+
+    # Keys that can be both top-level AND service-level
+    # We need lookahead to decide
+    ambiguous_keys = {'volumes', 'networks'}
+
+    # Service-level keys (directly under service name)
+    service_keys = {
+        'build', 'ports', 'environment', 'volumes', 'networks', 'depends_on',
+        'image', 'container_name', 'restart', 'command', 'expose', 'labels',
+        'healthcheck', 'deploy', 'logging', 'ulimits', 'sysctls', 'cap_add',
+        'cap_drop', 'devices', 'dns', 'entrypoint', 'env_file', 'extra_hosts',
+        'hostname', 'init', 'ipc', 'isolation', 'links', 'network_mode', 'pid',
+        'platform', 'privileged', 'profiles', 'pull_policy', 'read_only',
+        'runtime', 'scale', 'security_opt', 'shm_size', 'stdin_open',
+        'stop_grace_period', 'stop_signal', 'storage_opt', 'tmpfs', 'tty',
+        'user', 'userns_mode', 'working_dir'
+    }
+
+    # Keys that are nested under 'build:'
+    build_keys = {'context', 'dockerfile', 'args', 'target', 'cache_from', 'network', 'labels'}
+
+    # Helper: look ahead to see if next non-empty line starts with '-' (list item)
+    def next_is_list_item(idx):
+        for j in range(idx + 1, len(lines)):
+            next_stripped = lines[j].strip()
+            if next_stripped:
+                return next_stripped.startswith('-')
+        return False
+
+    # Track context
+    section = None  # 'services', 'volumes', 'networks'
+    in_service = False  # Inside a service definition
+    in_build = False  # Inside build: block
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if not stripped:
+            result.append('')
+            continue
+
+        # Extract key if this is a key: line
+        key = None
+        if ':' in stripped:
+            key = stripped.split(':')[0].strip()
+
+        # Check for top-level ONLY keys (0 indent) - always top-level
+        if key and key in top_level_only_keys:
+            result.append(stripped)
+            section = key
+            in_service = False
+            in_build = False
+            continue
+
+        # Handle ambiguous keys (volumes:, networks:)
+        # If followed by list item -> service-level
+        # If followed by a name ending with : -> top-level section
+        if key and key in ambiguous_keys and stripped == f'{key}:':
+            if section == 'services' and in_service:
+                # Check next line to decide
+                if next_is_list_item(i):
+                    # Service-level: volumes: or networks: with list items
+                    result.append('    ' + stripped)  # 4 spaces (service level)
+                    in_build = False
+                    continue
+            # Top-level section
+            result.append(stripped)
+            section = key
+            in_service = False
+            in_build = False
+            continue
+
+        # Handle services section
+        if section == 'services':
+            # Service name detection: ends with : and no other colons, and key is NOT a service_key
+            is_service_name = (
+                stripped.endswith(':') and
+                stripped.count(':') == 1 and
+                key and key not in service_keys and key not in build_keys
+            )
+
+            if is_service_name:
+                result.append('  ' + stripped)  # 2 spaces - service name
+                in_service = True
+                in_build = False
+                continue
+
+            if in_service:
+                # Check if this is a build: key
+                if key == 'build':
+                    result.append('    ' + stripped)  # 4 spaces
+                    in_build = stripped.endswith(':')  # Only if it's "build:" not "build: ./dir"
+                    continue
+
+                # Check if this is under build:
+                if in_build and key in build_keys:
+                    result.append('      ' + stripped)  # 6 spaces
+                    continue
+
+                # Service-level keys reset in_build
+                if key in service_keys:
+                    result.append('    ' + stripped)  # 4 spaces
+                    in_build = False
+                    continue
+
+                # List items
+                if stripped.startswith('-'):
+                    result.append('      ' + stripped)  # 6 spaces
+                    continue
+
+                # Other content inside service
+                if in_build:
+                    result.append('      ' + stripped)  # 6 spaces (under build)
+                else:
+                    result.append('    ' + stripped)  # 4 spaces (under service)
+                continue
+
+        # Handle volumes section
+        if section == 'volumes':
+            # Volume name: ends with : only
+            if stripped.endswith(':') and stripped.count(':') == 1:
+                result.append('  ' + stripped)  # 2 spaces
+            else:
+                result.append('    ' + stripped)  # 4 spaces
+            continue
+
+        # Handle networks section
+        if section == 'networks':
+            # Network name: ends with : only
+            if stripped.endswith(':') and stripped.count(':') == 1:
+                result.append('  ' + stripped)  # 2 spaces
+            else:
+                result.append('    ' + stripped)  # 4 spaces
+            continue
+
+        # Fallback
+        result.append(stripped)
+
+    return '\n'.join(result)
+
+
+def fix_github_actions_yaml(content: str) -> str:
+    """Fix GitHub Actions ci.yml specific indentation.
+
+    GitHub Actions structure:
+    name: CI               # 0 indent
+    on:                    # 0 indent
+      push:                # 2 spaces
+        branches: [main]   # 4 spaces
+    jobs:                  # 0 indent
+      test:                # 2 spaces (job name)
+        runs-on: ubuntu    # 4 spaces
+        services:          # 4 spaces
+          postgres:        # 6 spaces
+            image: x       # 8 spaces
+        steps:             # 4 spaces
+          - uses: x        # 6 spaces (list item)
+          - name: y        # 6 spaces
+            with:          # 8 spaces
+              key: value   # 10 spaces
+            run: z         # 8 spaces (under list item key)
+    """
+    lines = content.split('\n')
+    result = []
+
+    # Job-level keys (directly under job name)
+    job_keys = {
+        'runs-on', 'needs', 'if', 'steps', 'services', 'container', 'env',
+        'environment', 'outputs', 'strategy', 'timeout-minutes', 'continue-on-error',
+        'permissions', 'concurrency', 'defaults', 'uses', 'with', 'secrets'
+    }
+
+    # Service-level keys (under services.service_name)
+    service_keys = {'image', 'ports', 'env', 'options', 'volumes', 'credentials'}
+
+    # Step item keys (under each - item in steps)
+    step_item_keys = {'uses', 'with', 'run', 'name', 'id', 'if', 'env', 'continue-on-error', 'timeout-minutes', 'shell', 'working-directory'}
+
+    # Keys under 'with:'
+    with_keys = {'python-version', 'node-version', 'go-version', 'java-version', 'cache', 'fetch-depth'}
+
+    # Track context
+    section = None  # 'on', 'jobs', 'env', etc.
+    in_job = False
+    in_services = False
+    in_service = False
+    in_steps = False
+    in_step_item = False
+    in_with = False
+    in_strategy = False
+    in_matrix = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if not stripped:
+            result.append('')
+            continue
+
+        # Extract key
+        key = None
+        if ':' in stripped and not stripped.startswith('-'):
+            key = stripped.split(':')[0].strip()
+
+        # Top-level keys
+        if stripped.startswith('name:'):
+            result.append(stripped)
+            section = None
+            in_job = in_services = in_service = in_steps = in_step_item = in_with = False
+            continue
+
+        if stripped == 'on:':
+            result.append('on:')
+            section = 'on'
+            in_job = in_services = in_steps = False
+            continue
+
+        if stripped == 'jobs:':
+            result.append('jobs:')
+            section = 'jobs'
+            in_job = in_services = in_steps = False
+            continue
+
+        if stripped == 'env:' and section is None:
+            result.append('env:')
+            section = 'env'
+            continue
+
+        if stripped == 'permissions:' and section is None:
+            result.append('permissions:')
+            section = 'permissions'
+            continue
+
+        # Inside 'on:' section
+        if section == 'on':
+            if stripped in ['push:', 'pull_request:', 'workflow_dispatch:', 'schedule:', 'release:']:
+                result.append('  ' + stripped)
+                continue
+            if ':' in stripped or stripped.startswith('-'):
+                result.append('    ' + stripped)
+                continue
+
+        # Inside 'env:' or 'permissions:' section (top-level)
+        if section in ['env', 'permissions']:
+            result.append('  ' + stripped)
+            continue
+
+        # Inside 'jobs:' section
+        if section == 'jobs':
+            # First check if we're inside a job's sub-sections (before checking for new job)
+            if in_job:
+                # Handle steps:
+                if stripped == 'steps:':
+                    result.append('    steps:')  # 4 spaces
+                    in_steps = True
+                    in_step_item = False
+                    in_services = in_service = in_with = in_strategy = in_matrix = False
+                    continue
+
+                # Handle services:
+                if stripped == 'services:':
+                    result.append('    services:')  # 4 spaces
+                    in_services = True
+                    in_steps = in_step_item = in_with = in_strategy = in_matrix = False
+                    continue
+
+                # Handle strategy:
+                if stripped == 'strategy:':
+                    result.append('    strategy:')  # 4 spaces
+                    in_strategy = True
+                    in_steps = in_services = in_with = in_matrix = False
+                    continue
+
+                # Inside strategy
+                if in_strategy:
+                    if stripped == 'matrix:':
+                        result.append('      matrix:')  # 6 spaces
+                        in_matrix = True
+                        continue
+                    if in_matrix:
+                        result.append('        ' + stripped)  # 8 spaces
+                        continue
+                    result.append('      ' + stripped)  # 6 spaces
+                    continue
+
+                # Inside services section (must check before job name detection!)
+                if in_services:
+                    # Service name (postgres:, redis:, sqlite:, etc.)
+                    if stripped.endswith(':') and stripped.count(':') == 1 and key not in service_keys:
+                        result.append('      ' + stripped)  # 6 spaces - service name
+                        in_service = True
+                        continue
+                    if in_service:
+                        # Service config (image:, ports:, etc.)
+                        if key in service_keys:
+                            result.append('        ' + stripped)  # 8 spaces
+                            continue
+                        if stripped.startswith('-'):
+                            result.append('          ' + stripped)  # 10 spaces (list items)
+                            continue
+                        result.append('        ' + stripped)  # 8 spaces
+                        continue
+                    result.append('      ' + stripped)  # 6 spaces
+                    continue
+
+                # Inside steps
+                if in_steps:
+                    # Check if this looks like a new job name (escape hatch)
+                    # A new job name: ends with :, single colon, not a step key
+                    looks_like_job = (
+                        stripped.endswith(':') and
+                        stripped.count(':') == 1 and
+                        key and key not in job_keys and key not in service_keys and
+                        key not in step_item_keys and
+                        not stripped.startswith('-')
+                    )
+                    if looks_like_job:
+                        # This is a new job, escape from steps
+                        result.append('  ' + stripped)  # 2 spaces - job name
+                        in_job = True
+                        in_services = in_service = in_steps = in_step_item = in_with = in_strategy = in_matrix = False
+                        continue
+
+                    # Step list item (- uses:, - name:, etc.)
+                    if stripped.startswith('-'):
+                        result.append('      ' + stripped)  # 6 spaces
+                        in_step_item = True
+                        in_with = False
+                        continue
+
+                    if in_step_item:
+                        # with: under step item
+                        if stripped == 'with:':
+                            result.append('        with:')  # 8 spaces
+                            in_with = True
+                            continue
+
+                        # Content under with:
+                        if in_with:
+                            result.append('          ' + stripped)  # 10 spaces
+                            # Exit with: when we see another step key
+                            if key in step_item_keys and key != 'with':
+                                in_with = False
+                            continue
+
+                        # Other step item content (run:, uses:, env:, etc.)
+                        result.append('        ' + stripped)  # 8 spaces
+                        # Exit with: mode when we see step keys
+                        if key in step_item_keys:
+                            in_with = False
+                        continue
+
+                # Job-level keys (runs-on:, needs:, etc.)
+                if key in job_keys:
+                    result.append('    ' + stripped)  # 4 spaces
+                    continue
+
+            # Detect job name: single word ending with : that's not a job_key
+            is_job_name = (
+                stripped.endswith(':') and
+                stripped.count(':') == 1 and
+                key and key not in job_keys and key not in service_keys
+            )
+
+            if is_job_name:
+                result.append('  ' + stripped)  # 2 spaces - job name
+                in_job = True
+                in_services = in_service = in_steps = in_step_item = in_with = in_strategy = in_matrix = False
+                continue
+
+            # Fallback for job content - unknown keys get job-level indent
+            if in_job:
+                result.append('    ' + stripped)  # 4 spaces
+                continue
+
+        # Fallback
+        result.append(stripped)
+
+    return '\n'.join(result)
+
+
+def format_yaml_file(filepath: Path) -> bool:
+    """Format a YAML file with proper indentation.
+
+    Returns True if formatting was successful, False otherwise.
+    """
+    try:
+        content = filepath.read_text(encoding='utf-8')
+        filename = filepath.name.lower()
+
+        if 'docker-compose' in filename or 'compose' in filename:
+            fixed_content = fix_docker_compose_yaml(content)
+        elif 'ci' in filename or 'workflow' in filename or '.github' in str(filepath).lower():
+            fixed_content = fix_github_actions_yaml(content)
+        else:
+            # Generic YAML fix
+            fixed_content = fix_yaml_indentation(content)
+
+        filepath.write_text(fixed_content, encoding='utf-8')
+        return True
+    except Exception:
+        return False
+
+
 def format_python_file(filepath: Path) -> bool:
     """Format a Python file - first fix indentation, then run black.
 
@@ -515,11 +1044,16 @@ def format_file(filepath: Path, on_formatted: Callable[[str, bool], None] | None
         True if formatting was successful or not needed, False if it failed
     """
     suffix = filepath.suffix.lower()
+    filename = filepath.name.lower()
     success = True
 
     # Python files
     if suffix == ".py":
         success = format_python_file(filepath)
+
+    # YAML files (docker-compose.yml, ci.yml, etc.)
+    elif suffix in (".yml", ".yaml"):
+        success = format_yaml_file(filepath)
 
     # JavaScript/TypeScript files
     elif suffix in (".js", ".jsx", ".ts", ".tsx", ".json", ".css", ".scss", ".html", ".vue", ".svelte"):
@@ -546,7 +1080,8 @@ def format_project(project_dir: Path, on_progress: Callable[[str, bool], None] |
     # Extensions to format
     python_exts = {".py"}
     js_exts = {".js", ".jsx", ".ts", ".tsx", ".json", ".css", ".scss", ".html", ".vue", ".svelte"}
-    all_exts = python_exts | js_exts
+    yaml_exts = {".yml", ".yaml"}
+    all_exts = python_exts | js_exts | yaml_exts
 
     for filepath in project_dir.rglob("*"):
         if not filepath.is_file():
@@ -584,4 +1119,5 @@ def check_formatters_available() -> dict:
         "prettier": shutil.which("prettier") is not None,
         "python_indenter": True,  # Our custom Python indenter is always available
         "js_indenter": True,  # Our custom JS/TS indenter is always available
+        "yaml_indenter": True,  # Our custom YAML indenter is always available
     }
