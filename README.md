@@ -6,7 +6,15 @@
 
 **Scalable Agent-to-agent Task Generation & Automation Service**
 
-Generator aplikasi full-stack otomatis dengan multi-agent AI. Framework ini menggunakan LangGraph untuk menggerakkan multi-agent yang berkolaborasi dalam membuat aplikasi full-stack dari prompt satu paragraf.
+Generator aplikasi full-stack otomatis dengan multi-agent AI.
+
+## Demo
+
+<p align="center">
+  <img src="assets/demo.gif" alt="SATGAS Demo" width="800"/>
+</p>
+
+Framework ini menggunakan LangGraph untuk menggerakkan multi-agent yang berkolaborasi dalam membuat aplikasi full-stack dari prompt satu paragraf.
 
 ## Fitur Utama
 
